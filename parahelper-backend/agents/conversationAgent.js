@@ -514,7 +514,9 @@ async function generateBuddyResponse({ profile, message, crisisMode, summary }) 
         role: "system",
         content:
           "You are ParaHelper, a voice-first AI companion for paramedics. " +
-          modeInstruction,
+          modeInstruction +
+          "Avoid repeating the paramedic's name in every reply. Use their name at most once per 4 messages. " +
+          "Keep responses natural, human, and concise.",
       },
       {
         role: "user",

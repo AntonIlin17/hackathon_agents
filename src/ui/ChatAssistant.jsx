@@ -5,8 +5,28 @@ import { sendChatMessage } from "../api";
 export default function ChatAssistant({ paramedic }) {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
+  const [sceneId, setSceneId] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+
+  const sendEvent = async (event) => {
+    if (!paramedic) return;
+    setLoading(true);
+    setError("");
+    try {
+      const res = await sendChatMessage({
+        paramedicId: paramedic.paramedic_id,
+        role: paramedic.role,
+        message: "",
+        context: { event, sceneId: sceneId || undefined },
+      });
+      const botMsg = { role: "assistant", content: res.response || "" };
+      setMessages((prev) => [...prev, botMsg]);
+    } catch (err) {
+      setError(err.message || "Event failed. Please try again.");
+    }
+    setLoading(false);
+  };
 
   const handleSend = async (e) => {
     e.preventDefault();
@@ -26,6 +46,7 @@ export default function ChatAssistant({ paramedic }) {
         role: paramedic.role,
         message: text,
         recentMessages: history,
+        context: { sceneId: sceneId || undefined },
       });
       const botMsg = { role: "assistant", content: res.response || "" };
       setMessages((prev) => [...prev, botMsg]);
@@ -74,6 +95,19 @@ export default function ChatAssistant({ paramedic }) {
             {paramedic.role}
           </div>
         </div>
+        <input
+          value={sceneId}
+          onChange={(e) => setSceneId(e.target.value)}
+          placeholder="Scene ID (optional)"
+          style={{
+            width: 130,
+            fontSize: 10,
+            padding: "4px 6px",
+            borderRadius: 6,
+            border: "none",
+            outline: "none",
+          }}
+        />
       </div>
 
       <div
@@ -159,8 +193,24 @@ export default function ChatAssistant({ paramedic }) {
           background: "#fff",
           display: "flex",
           gap: 6,
+          flexWrap: "wrap",
         }}
       >
+        <button
+          type="button"
+          onClick={() => sendEvent("post_call")}
+          disabled={loading}
+          style={{
+            padding: "6px 10px",
+            borderRadius: 8,
+            border: "1px solid #d0d4dd",
+            background: "#fff",
+            fontSize: 11,
+            cursor: loading ? "default" : "pointer",
+          }}
+        >
+          Post-Call Check-in
+        </button>
         <input
           value={input}
           onChange={(e) => setInput(e.target.value)}
