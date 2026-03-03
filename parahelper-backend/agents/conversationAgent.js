@@ -500,12 +500,31 @@ function buildShiftEndSummary({ name, state, summary }) {
   return `Good shift, ${name}. ${openLine} ${patternLine} ${summary || ""}`.trim();
 }
 
-async function generateBuddyResponse({ profile, message, crisisMode, summary }) {
+function formatRecentMessages(recentMessages, limit = 8) {
+  if (!Array.isArray(recentMessages) || recentMessages.length === 0) return "";
+  const slice = recentMessages.slice(-limit);
+  return slice
+    .map((m) => {
+      const role = m.role === "assistant" ? "ParaHelper" : "Medic";
+      const content = String(m.content || "").trim();
+      return `${role}: ${content}`;
+    })
+    .join("\n");
+}
+
+async function generateBuddyResponse({
+  profile,
+  message,
+  crisisMode,
+  summary,
+  recentMessages = [],
+}) {
   const client = getOpenRouterClient();
   const name = profile?.first_name || "there";
   const modeInstruction = crisisMode
     ? "Use short, sharp responses. No small talk. Give only critical info."
     : "Keep it natural, short, and direct. No filler. Sound like a shift buddy.";
+  const recentContext = formatRecentMessages(recentMessages);
 
   const response = await client.chat.completions.create({
     model: "google/gemini-2.5-flash",
@@ -516,13 +535,15 @@ async function generateBuddyResponse({ profile, message, crisisMode, summary }) 
           "You are ParaHelper, a voice-first AI companion for paramedics. " +
           modeInstruction +
           "Avoid repeating the paramedic's name in every reply. Use their name at most once per 4 messages. " +
-          "Keep replies short, direct, and human.",
+          "Keep replies short, direct, and human. " +
+          "Stay consistent with the recent conversation and continue the thread.",
       },
       {
         role: "user",
         content:
           `Paramedic name: ${name}\n` +
           `Conversation summary: ${summary || "None"}\n` +
+          (recentContext ? `Recent messages:\n${recentContext}\n` : "") +
           `Message: ${message}`,
       },
     ],
@@ -661,10 +682,9 @@ async function handleConversation({
   }
 
   const detectedForms = detectForms(cleaned);
-  const { updates: formUpdates, guardrail } = extractFormFields(
-    cleaned,
-    detectedForms
-  );
+  const formFocus =
+    detectedForms.length > 0 ? detectedForms : state.openForms || [];
+  const { updates: formUpdates, guardrail } = extractFormFields(cleaned, formFocus);
 
   if (detectedForms.length > 0) {
     state.openForms = Array.from(new Set([...state.openForms, ...detectedForms]));
@@ -744,6 +764,9 @@ async function handleConversation({
   } else if (detectAdminIntent(cleaned)) {
     const adminResult = await handleAdminTask(paramedicId, cleaned);
     responseText = adminResult.response;
+  } else if (formFocus.length > 0) {
+    const fixPrompt = buildOneTapFix(guardrail);
+    responseText = fixPrompt || buildFormHelpResponse(formFocus);
   } else {
     const summary = await summarizeConversation(recentMessages);
     const sceneSummary = buildSceneSummary(sceneState);
@@ -752,6 +775,7 @@ async function handleConversation({
       message: sceneSummary ? `${sceneSummary}\n${cleaned}` : cleaned,
       crisisMode: state.crisisMode,
       summary,
+      recentMessages,
     });
   }
 
@@ -769,7 +793,7 @@ async function handleConversation({
   }
 
   const fixPrompt = buildOneTapFix(guardrail);
-  if (fixPrompt) {
+  if (fixPrompt && !responseText.includes(fixPrompt)) {
     responseText = `${responseText}\n${fixPrompt}`;
   }
 
@@ -790,7 +814,7 @@ async function handleConversation({
   return {
     response: responseText,
     crisisMode: state.crisisMode,
-    detectedForms,
+    detectedForms: formFocus,
     formUpdates,
     guardrail,
     autoExport: guardrail.approved && detectedForms.length > 0,
