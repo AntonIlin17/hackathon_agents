@@ -101,6 +101,7 @@ const sceneSafetyKeywords = [
   "weapon",
 ];
 const destinationKeywords = ["destination", "where should we go", "closest hospital"];
+const formHelpKeywords = ["form", "which form", "what form", "form should i use", "help filling"];
 const pediatricKeywords = ["pediatric", "infant", "child", "toddler", "year old"];
 
 const questionStarters = ["what", "how", "dose", "protocol", "should", "can", "when", "where"];
@@ -187,6 +188,27 @@ function detectSceneSafety(text) {
 function detectDestinationIntent(text) {
   const lower = text.toLowerCase();
   return destinationKeywords.some((keyword) => lower.includes(keyword));
+}
+
+function detectFormHelp(text) {
+  const lower = text.toLowerCase();
+  return formHelpKeywords.some((keyword) => lower.includes(keyword));
+}
+
+function buildFormHelpResponse(detectedForms) {
+  if (detectedForms.includes("occurrenceReport")) {
+    return "This sounds like an Occurrence Report. Was it call-related, station-related, or vehicle-related?";
+  }
+  if (detectedForms.includes("teddyBearTracking")) {
+    return "Sounds like a Teddy Bear Tracking form. Who received the bear and where?";
+  }
+  if (detectedForms.includes("shiftReport")) {
+    return "Sounds like the Shift Report. Which date or month should I pull?";
+  }
+  if (detectedForms.includes("statusReport")) {
+    return "Sounds like the Paramedic Status Report. What status item do you want to check?";
+  }
+  return "I can help with: Occurrence Report, Teddy Bear Tracking, Shift Report, or Paramedic Status. Which one do you need?";
 }
 
 function extractVitals(text) {
@@ -694,6 +716,8 @@ async function handleConversation({
         : "";
       responseText = route ? `${suggestion}\n${route}` : suggestion;
     }
+  } else if (detectFormHelp(cleaned)) {
+    responseText = buildFormHelpResponse(detectedForms);
   } else if (detectDirectionsIntent(cleaned)) {
     const parsed = parseRouteFromMessage(cleaned);
     const stationOrigin = getStationCity(profile?.station) || profile?.station || "";
