@@ -17,6 +17,7 @@ async function upsertScene(sceneId, updates) {
       },
       $setOnInsert: {
         created_at: new Date(),
+        audit_log: [],
       },
     },
     { upsert: true }
@@ -24,4 +25,19 @@ async function upsertScene(sceneId, updates) {
   return getScene(sceneId);
 }
 
-module.exports = { getScene, upsertScene };
+async function appendAudit(sceneId, entry) {
+  const db = await getDb("parahelper_conversations");
+  await db.collection("scene_sessions").updateOne(
+    { scene_id: sceneId },
+    {
+      $push: {
+        audit_log: {
+          ...entry,
+          at: new Date(),
+        },
+      },
+    }
+  );
+}
+
+module.exports = { getScene, upsertScene, appendAudit };

@@ -12,9 +12,10 @@ const {
   getMockWeather,
   getMockDirections,
   getStationCity,
+  getDestinationRecommendation,
 } = require("../utils/mockLiveData");
 const { getDirections: getMapboxDirections } = require("../utils/mapboxDirections");
-const { getScene, upsertScene } = require("../utils/sceneSessions");
+const { getScene, upsertScene, appendAudit } = require("../utils/sceneSessions");
 
 const crisisKeywords = [
   "cardiac arrest",
@@ -83,6 +84,25 @@ const stressKeywords = [
   "shaken",
   "overwhelmed",
 ];
+const redFlagKeywords = [
+  "unresponsive",
+  "unequal pupils",
+  "chest pain radiating",
+  "stroke signs",
+  "severe bleeding",
+  "no pulse",
+  "gcs",
+];
+const sceneSafetyKeywords = [
+  "aggressive bystander",
+  "scene not safe",
+  "fire not out",
+  "traffic not controlled",
+  "weapon",
+];
+const destinationKeywords = ["destination", "where should we go", "closest hospital"];
+const formHelpKeywords = ["form", "which form", "what form", "form should i use", "help filling"];
+const pediatricKeywords = ["pediatric", "infant", "child", "toddler", "year old"];
 
 const questionStarters = ["what", "how", "dose", "protocol", "should", "can", "when", "where"];
 
@@ -155,6 +175,120 @@ function detectStressCue(text) {
   return stressKeywords.some((keyword) => lower.includes(keyword));
 }
 
+function detectRedFlags(text) {
+  const lower = text.toLowerCase();
+  return redFlagKeywords.filter((keyword) => lower.includes(keyword));
+}
+
+function detectSceneSafety(text) {
+  const lower = text.toLowerCase();
+  return sceneSafetyKeywords.filter((keyword) => lower.includes(keyword));
+}
+
+function detectDestinationIntent(text) {
+  const lower = text.toLowerCase();
+  return destinationKeywords.some((keyword) => lower.includes(keyword));
+}
+
+function detectFormHelp(text) {
+  const lower = text.toLowerCase();
+  return formHelpKeywords.some((keyword) => lower.includes(keyword));
+}
+
+function buildFormHelpResponse(detectedForms) {
+  if (detectedForms.includes("occurrenceReport")) {
+    return "Occurrence Report. Call-related, station-related, or vehicle-related?";
+  }
+  if (detectedForms.includes("teddyBearTracking")) {
+    return "Teddy Bear Tracking. Who got it and where?";
+  }
+  if (detectedForms.includes("shiftReport")) {
+    return "Shift Report. Which date or month?";
+  }
+  if (detectedForms.includes("statusReport")) {
+    return "Paramedic Status Report. Which item?";
+  }
+  return "Which form: Occurrence, Teddy Bear, Shift, or Status?";
+}
+
+function extractVitals(text) {
+  const vitals = {};
+  const bp = text.match(/bp\s*(\d{2,3})\s*\/\s*(\d{2,3})/i);
+  const hr = text.match(/hr\s*(\d{2,3})/i);
+  const rr = text.match(/rr\s*(\d{1,2})/i);
+  const spo2 = text.match(/spo2\s*(\d{2,3})/i);
+  const gcs = text.match(/gcs\s*(\d{1,2})/i);
+  if (bp) vitals.bp = `${bp[1]}/${bp[2]}`;
+  if (hr) vitals.hr = hr[1];
+  if (rr) vitals.rr = rr[1];
+  if (spo2) vitals.spo2 = spo2[1];
+  if (gcs) vitals.gcs = gcs[1];
+  return vitals;
+}
+
+function buildDestinationAdvisor(text) {
+  const lower = text.toLowerCase();
+  if (lower.includes("stroke")) return getDestinationRecommendation("stroke");
+  if (lower.includes("trauma") || lower.includes("mva")) return getDestinationRecommendation("trauma");
+  if (lower.includes("cardiac") || lower.includes("stemi")) return getDestinationRecommendation("cardiac");
+  if (detectPediatric(text)) return getDestinationRecommendation("pediatric");
+  return "";
+}
+
+function extractDestinationFromRecommendation(recommendation) {
+  const match = String(recommendation || "").match(/:\s*(.+)$/);
+  return match ? match[1].trim() : "";
+}
+
+function detectPediatric(text) {
+  const lower = text.toLowerCase();
+  if (pediatricKeywords.some((keyword) => lower.includes(keyword))) return true;
+  const ageMatch = lower.match(/\b(\d{1,2})\s*year/);
+  if (ageMatch) {
+    const age = Number(ageMatch[1]);
+    return Number.isFinite(age) && age < 12;
+  }
+  return false;
+}
+
+function buildDispatchBrief(message) {
+  const flags = detectRedFlags(message);
+  const suggestions = [];
+  if (message.toLowerCase().includes("mva")) suggestions.push("Trauma protocol");
+  if (message.toLowerCase().includes("seizure")) suggestions.push("Seizure protocol");
+  if (message.toLowerCase().includes("stroke")) suggestions.push("Stroke protocol");
+  const equipment = [];
+  if (message.toLowerCase().includes("pediatric")) {
+    equipment.push("Pediatric airway kit");
+    equipment.push("Weight-based dosing chart");
+  }
+  return {
+    highlights: flags,
+    suggestions,
+    equipment,
+  };
+}
+
+async function buildHandoffSummary(message) {
+  const client = getOpenRouterClient();
+  const response = await client.chat.completions.create({
+    model: "google/gemini-2.5-flash",
+    messages: [
+      {
+        role: "system",
+        content:
+          "Create a concise SBAR handoff summary (4 short lines). " +
+          "Use the provided notes only.",
+      },
+      {
+        role: "user",
+        content: message,
+      },
+    ],
+    temperature: 0.2,
+  });
+  return response?.choices?.[0]?.message?.content || "";
+}
 function isQuestion(text) {
   const trimmed = String(text || "").trim().toLowerCase();
   if (!trimmed) return false;
@@ -188,7 +322,7 @@ function buildOneTapFix(guardrail) {
 }
 
 function buildSupportLine() {
-  return "That sounded like a hard one. Take a breath — I've got the paperwork.";
+  return "That was rough. I've got the paperwork.";
 }
 
 function detectSceneTask(text) {
@@ -226,7 +360,7 @@ function buildWeatherReply(city) {
     return "I don't have a weather snapshot for your area yet.";
   }
   const alertPart = weather.alert ? ` ${weather.alert}.` : "";
-  return `${city} weather: ${weather.condition}, ${weather.tempC}°C, wind ${weather.windKph} kph.${alertPart}`;
+  return `${city}: ${weather.condition}, ${weather.tempC}°C, wind ${weather.windKph} kph.${alertPart}`;
 }
 
 async function buildDirectionsReply(fromCity, toCity) {
@@ -346,32 +480,77 @@ function buildProactiveNudge(state) {
 function buildLoginGreeting({ profile, state, context }) {
   const name = profile?.first_name || "there";
   const partnerLine = state.partnerName
-    ? `You're on with ${state.partnerName} today.`
+    ? `Partner: ${state.partnerName}.`
     : "";
   const weatherLine = context.weatherAlert ? `${context.weatherAlert} ` : "";
   const stationLine = profile?.station ? `Station ${profile.station}.` : "";
-  return `Morning ${name}! ${partnerLine} ${stationLine} ${weatherLine}`.trim();
+  return `Morning ${name}. ${partnerLine} ${stationLine} ${weatherLine}`.trim();
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function containsName(text, name) {
+  if (!name) return false;
+  const pattern = new RegExp(`\\b${escapeRegExp(name)}\\b`, "i");
+  return pattern.test(text);
+}
+
+function scrubName(text, name) {
+  if (!name) return text;
+  const pattern = new RegExp(`\\b${escapeRegExp(name)}\\b`, "gi");
+  return text
+    .replace(pattern, "")
+    .replace(/\s{2,}/g, " ")
+    .replace(/\s+,/g, ",")
+    .replace(/^[,\s]+/g, "")
+    .replace(/\s+\./g, ".")
+    .trim();
 }
 
 function buildShiftEndSummary({ name, state, summary }) {
   const openForms = state.openForms.length;
   const openLine =
     openForms > 0
-      ? `You've got ${openForms} form${openForms > 1 ? "s" : ""} still open.`
+      ? `${openForms} form${openForms > 1 ? "s" : ""} still open.`
       : "All forms are done.";
   const patternLine =
     state.missedMeals >= 3
-      ? "Noticed a few missed meals this week — want me to file them?"
+      ? "Missed a few meals this week. Want me to file them?"
       : "";
-  return `Good shift today ${name}. ${openLine} ${patternLine} ${summary || ""}`.trim();
+  return `Good shift, ${name}. ${openLine} ${patternLine} ${summary || ""}`.trim();
 }
 
-async function generateBuddyResponse({ profile, message, crisisMode, summary }) {
+function formatRecentMessages(recentMessages, limit = 8) {
+  if (!Array.isArray(recentMessages) || recentMessages.length === 0) return "";
+  const slice = recentMessages.slice(-limit);
+  return slice
+    .map((m) => {
+      const role = m.role === "assistant" ? "ParaHelper" : "Medic";
+      const content = String(m.content || "").trim();
+      return `${role}: ${content}`;
+    })
+    .join("\n");
+}
+
+async function generateBuddyResponse({
+  profile,
+  message,
+  crisisMode,
+  summary,
+  recentMessages = [],
+  allowName = true,
+}) {
   const client = getOpenRouterClient();
   const name = profile?.first_name || "there";
   const modeInstruction = crisisMode
     ? "Use short, sharp responses. No small talk. Give only critical info."
-    : "Be conversational, friendly, and concise. Sound like a shift buddy.";
+    : "Keep it natural, short, and direct. No filler. Sound like a shift buddy.";
+  const recentContext = formatRecentMessages(recentMessages);
+  const nameInstruction = allowName
+    ? "You may use their name sparingly."
+    : "Do not use the paramedic's name in this reply.";
 
   const response = await client.chat.completions.create({
     model: "google/gemini-2.5-flash",
@@ -380,20 +559,26 @@ async function generateBuddyResponse({ profile, message, crisisMode, summary }) 
         role: "system",
         content:
           "You are ParaHelper, a voice-first AI companion for paramedics. " +
-          modeInstruction,
+          modeInstruction +
+          "Avoid repeating the paramedic's name in every reply. Use their name at most once per 4 messages. " +
+          nameInstruction +
+          " Keep replies short, direct, and human. " +
+          "Stay consistent with the recent conversation and continue the thread.",
       },
       {
         role: "user",
         content:
-          `Paramedic name: ${name}\n` +
+          (allowName ? `Paramedic name: ${name}\n` : "") +
           `Conversation summary: ${summary || "None"}\n` +
+          (recentContext ? `Recent messages:\n${recentContext}\n` : "") +
           `Message: ${message}`,
       },
     ],
     temperature: crisisMode ? 0.1 : 0.4,
   });
 
-  return response?.choices?.[0]?.message?.content || "";
+  const content = response?.choices?.[0]?.message?.content || "";
+  return allowName ? content : scrubName(content, name);
 }
 
 async function handleConversation({
@@ -413,6 +598,10 @@ async function handleConversation({
   const sceneId = context.sceneId || "";
   const roleOnScene = context.roleOnScene || "";
   const allowMedical = detectMedicalIntent(cleaned) && !(sceneId && !isQuestion(cleaned));
+  const redFlags = detectRedFlags(cleaned);
+  const pediatricMode = detectPediatric(cleaned);
+  const safetyFlags = detectSceneSafety(cleaned);
+  const vitals = extractVitals(cleaned);
 
   let sceneState = null;
   if (sceneId) {
@@ -450,14 +639,29 @@ async function handleConversation({
       { at: new Date(), by: participantName, text: cleaned },
     ].slice(-20);
 
+    const vitalsLog = [
+      ...(sceneState?.vitals || []),
+      Object.keys(vitals).length > 0
+        ? { at: new Date(), by: participantName, ...vitals }
+        : null,
+    ].filter(Boolean);
+
     sceneState = await upsertScene(sceneId, {
       participants: updatedParticipants,
       tasks,
       notes,
+      vitals: vitalsLog,
     });
+    if (safetyFlags.length > 0) {
+      await appendAudit(sceneId, {
+        type: "scene_safety",
+        by: participantName,
+        flags: safetyFlags,
+      });
+    }
   }
 
-  if (detectSilence(cleaned)) {
+  if (detectSilence(cleaned) && !context.event) {
     return {
       response: "I'm here when you're ready.",
       crisisMode: state.crisisMode,
@@ -473,6 +677,13 @@ async function handleConversation({
     if (persisted) {
       Object.assign(state, persisted);
     }
+  }
+
+  if (context.event === "dispatch") {
+    state.callCount += 1;
+  }
+  if (redFlags.length > 0) {
+    state.highAcuityCount += 1;
   }
 
   if (context.partnerName) {
@@ -499,18 +710,42 @@ async function handleConversation({
   }
 
   const detectedForms = detectForms(cleaned);
-  const { updates: formUpdates, guardrail } = extractFormFields(
-    cleaned,
-    detectedForms
-  );
+  const formFocus =
+    detectedForms.length > 0 ? detectedForms : state.openForms || [];
+  const { updates: formUpdates, guardrail } = extractFormFields(cleaned, formFocus);
 
   if (detectedForms.length > 0) {
     state.openForms = Array.from(new Set([...state.openForms, ...detectedForms]));
   }
 
   let responseText = "";
-  if (context.event === "shift_end") {
-    const summary = await summarizeConversation(recentMessages);
+  if (context.event === "dispatch") {
+    const brief = buildDispatchBrief(cleaned);
+    responseText = `Dispatch brief: ${brief.highlights.join(", ") || "No immediate red flags"}.`;
+    if (brief.suggestions.length > 0) {
+      responseText += ` Suggested: ${brief.suggestions.join(", ")}.`;
+    }
+    if (brief.equipment.length > 0) {
+      responseText += ` Prep: ${brief.equipment.join(", ")}.`;
+    }
+  } else if (context.event === "post_call" || context.event === "checkin") {
+    const busyNote =
+      state.callCount >= 4
+        ? `Busy stretch: ${state.callCount} calls.`
+        : "Quick check-in.";
+    const acuityNote =
+      state.highAcuityCount >= 2
+        ? `High-acuity: ${state.highAcuityCount}.`
+        : "";
+    responseText = `${busyNote} ${acuityNote} Need anything before the next call?`.trim();
+    state.lastCheckInAt = new Date().toISOString();
+  } else if (context.event === "handoff") {
+    responseText = await buildHandoffSummary(cleaned);
+    if (sceneState?.vitals?.length === 0) {
+      responseText += "\nDocumentation check: vitals not logged.";
+    }
+  } else if (context.event === "shift_end") {
+    const summary = context.summary || (await summarizeConversation(recentMessages));
     responseText = buildShiftEndSummary({
       name: profile?.first_name || "there",
       state,
@@ -519,6 +754,20 @@ async function handleConversation({
   } else if (detectWeatherIntent(cleaned)) {
     const city = extractCity(cleaned, cities) || profile?.station || "Huntsville";
     responseText = buildWeatherReply(city);
+  } else if (detectDestinationIntent(cleaned)) {
+    const suggestion = buildDestinationAdvisor(cleaned);
+    if (!suggestion) {
+      responseText = "I can suggest a destination if you provide the condition.";
+    } else {
+      const stationOrigin = getStationCity(profile?.station) || profile?.station || "Huntsville";
+      const destination = extractDestinationFromRecommendation(suggestion);
+      const route = destination
+        ? await buildDirectionsReply(normalizeOrigin(stationOrigin), destination)
+        : "";
+      responseText = route ? `${suggestion}\n${route}` : suggestion;
+    }
+  } else if (detectFormHelp(cleaned)) {
+    responseText = buildFormHelpResponse(detectedForms);
   } else if (detectDirectionsIntent(cleaned)) {
     const parsed = parseRouteFromMessage(cleaned);
     const stationOrigin = getStationCity(profile?.station) || profile?.station || "";
@@ -543,14 +792,20 @@ async function handleConversation({
   } else if (detectAdminIntent(cleaned)) {
     const adminResult = await handleAdminTask(paramedicId, cleaned);
     responseText = adminResult.response;
+  } else if (formFocus.length > 0) {
+    const fixPrompt = buildOneTapFix(guardrail);
+    responseText = fixPrompt || buildFormHelpResponse(formFocus);
   } else {
-    const summary = await summarizeConversation(recentMessages);
+    const summary = context.summary || (await summarizeConversation(recentMessages));
     const sceneSummary = buildSceneSummary(sceneState);
+    const allowName = (state.nameUseCounter || 0) >= 3;
     responseText = await generateBuddyResponse({
       profile,
       message: sceneSummary ? `${sceneSummary}\n${cleaned}` : cleaned,
       crisisMode: state.crisisMode,
       summary,
+      recentMessages,
+      allowName,
     });
   }
 
@@ -563,8 +818,12 @@ async function handleConversation({
     responseText = `${buildSupportLine()} ${responseText}`.trim();
   }
 
+  if (safetyFlags.length > 0) {
+    responseText = `${responseText} Scene safety not confirmed. Log police involvement?`;
+  }
+
   const fixPrompt = buildOneTapFix(guardrail);
-  if (fixPrompt) {
+  if (fixPrompt && !responseText.includes(fixPrompt)) {
     responseText = `${responseText}\n${fixPrompt}`;
   }
 
@@ -574,6 +833,16 @@ async function handleConversation({
     responseText = `${greeting} ${proactive} ${responseText}`.trim();
   }
 
+  if (state.highAcuityCount >= 4) {
+    responseText = `${responseText} ${state.highAcuityCount} high-acuity calls today—hydrate when you can.`;
+  }
+
+  const name = profile?.first_name || "";
+  if (containsName(responseText, name)) {
+    state.nameUseCounter = 0;
+  } else {
+    state.nameUseCounter = (state.nameUseCounter || 0) + 1;
+  }
   state.lastSeenAt = new Date().toISOString();
   updateParamedicState(paramedicId, state);
   await saveMemoryToMongo(paramedicId, state);
@@ -581,7 +850,7 @@ async function handleConversation({
   return {
     response: responseText,
     crisisMode: state.crisisMode,
-    detectedForms,
+    detectedForms: formFocus,
     formUpdates,
     guardrail,
     autoExport: guardrail.approved && detectedForms.length > 0,

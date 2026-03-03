@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { COLORS, styles } from "./styles";
+import { exportForms } from "../api";
 
 export default function TeddyBearForm() {
   const now = new Date();
@@ -16,18 +17,52 @@ export default function TeddyBearForm() {
     recipientType: "",
   });
   const [submitted, setSubmitted] = useState(false);
+  const [status, setStatus] = useState({ loading: false, message: "", error: "" });
   const formNum = `PTB-${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}-${String(Math.floor(Math.random() * 9999)).padStart(4, "0")}`;
 
   const u = (key) => (e) =>
     setForm((p) => ({ ...p, [key]: e.target.value }));
+
+  const handleSubmit = async () => {
+    setStatus({ loading: true, message: "", error: "" });
+    try {
+      const childName =
+        form.recipientType ||
+        `${form.recipientAge || ""} ${form.recipientGender || ""}`.trim() ||
+        "Recipient";
+      const payload = {
+        teddyBearTracking: {
+          childName: { value: childName },
+          raw: { ...form, formNum },
+        },
+      };
+      const res = await exportForms(payload);
+      if (res.success) {
+        setStatus({ loading: false, message: res.message, error: "" });
+        setSubmitted(true);
+      } else {
+        setStatus({
+          loading: false,
+          message: "",
+          error: res.message || "Export failed.",
+        });
+      }
+    } catch (err) {
+      setStatus({
+        loading: false,
+        message: "",
+        error: err.message || "Export failed.",
+      });
+    }
+  };
 
   if (submitted)
     return (
       <div style={styles.card}>
         <div style={styles.cardBody}>
           <div style={styles.submitted}>
-            <span style={{ fontSize: 24 }}>🧸</span> Teddy Bear Record
-            Submitted — {formNum}
+            <span style={{ fontSize: 24 }}>🧸</span>{" "}
+            {status.message || "Teddy Bear Record Submitted"} — {formNum}
           </div>
           <div style={styles.btnRow}>
             <button
@@ -234,10 +269,25 @@ export default function TeddyBearForm() {
           >
             Clear
           </button>
-          <button style={styles.btnPrimary} onClick={() => setSubmitted(true)}>
-            Submit Record
+          <button
+            style={styles.btnPrimary}
+            onClick={handleSubmit}
+            disabled={status.loading}
+          >
+            {status.loading ? "Submitting..." : "Submit Record"}
           </button>
         </div>
+        {status.error && (
+          <div
+            style={{
+              marginTop: 12,
+              fontSize: 12,
+              color: COLORS.accent,
+            }}
+          >
+            {status.error}
+          </div>
+        )}
       </div>
     </div>
   );

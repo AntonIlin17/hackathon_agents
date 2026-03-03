@@ -7,11 +7,15 @@ function getParamedicState(paramedicId) {
       missedMeals: 0,
       overtimeCount: 0,
       teddyBearsGiven: 0,
+      callCount: 0,
+      highAcuityCount: 0,
+      lastCheckInAt: null,
       lastToughCall: "",
       partnerName: "",
       crisisMode: false,
       lastModeSwitchAt: null,
       openForms: [],
+      nameUseCounter: 0,
       lastSeenAt: null,
     });
   }

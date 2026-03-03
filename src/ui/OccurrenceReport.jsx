@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { COLORS, styles } from "./styles";
+import { exportForms } from "../api";
 
 export default function OccurrenceReport() {
   const now = new Date();
@@ -30,6 +31,7 @@ export default function OccurrenceReport() {
     creatorDetails: "",
   });
   const [submitted, setSubmitted] = useState(false);
+  const [status, setStatus] = useState({ loading: false, message: "", error: "" });
 
   const u = (key) => (e) =>
     setForm((p) => ({
@@ -37,13 +39,49 @@ export default function OccurrenceReport() {
       [key]: e.target.type === "checkbox" ? e.target.checked : e.target.value,
     }));
 
+  const handleSubmit = async () => {
+    setStatus({ loading: true, message: "", error: "" });
+    try {
+      const payload = {
+        occurrenceReport: {
+          // Map to backend guardrail fields
+          location: { value: form.service || form.vehicleDesc || form.briefDescription },
+          incidentType: {
+            value:
+              form.classification ||
+              form.occurrenceType ||
+              form.briefDescription,
+          },
+          raw: form,
+        },
+      };
+      const res = await exportForms(payload);
+      if (res.success) {
+        setStatus({ loading: false, message: res.message, error: "" });
+        setSubmitted(true);
+      } else {
+        setStatus({
+          loading: false,
+          message: "",
+          error: res.message || "Export failed.",
+        });
+      }
+    } catch (err) {
+      setStatus({
+        loading: false,
+        message: "",
+        error: err.message || "Export failed.",
+      });
+    }
+  };
+
   if (submitted)
     return (
       <div style={styles.card}>
         <div style={styles.cardBody}>
           <div style={styles.submitted}>
-            <span style={{ fontSize: 24 }}>✓</span> Occurrence Report Submitted
-            Successfully
+            <span style={{ fontSize: 24 }}>✓</span>{" "}
+            {status.message || "Occurrence Report Submitted"}
           </div>
           <div style={styles.btnRow}>
             <button
@@ -407,10 +445,25 @@ export default function OccurrenceReport() {
           >
             Clear Form
           </button>
-          <button style={styles.btnPrimary} onClick={() => setSubmitted(true)}>
-            Submit Report
+          <button
+            style={styles.btnPrimary}
+            onClick={handleSubmit}
+            disabled={status.loading}
+          >
+            {status.loading ? "Submitting..." : "Submit Report"}
           </button>
         </div>
+        {status.error && (
+          <div
+            style={{
+              marginTop: 12,
+              fontSize: 12,
+              color: COLORS.accent,
+            }}
+          >
+            {status.error}
+          </div>
+        )}
       </div>
     </div>
   );
