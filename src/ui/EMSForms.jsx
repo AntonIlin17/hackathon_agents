@@ -4,15 +4,19 @@ import OccurrenceReport from "./OccurrenceReport";
 import TeddyBearForm from "./TeddyBearForm";
 import ShiftReport from "./ShiftReport";
 import ParamedicStatus from "./ParamedicStatus";
+// 1. Import your new AI form component
+import EmptyFormAI from "./EmptyFormAI"; 
 
 export default function EMSForms() {
   const [activeTab, setActiveTab] = useState(0);
 
+  // 2. Add the "AI Empty Form" to the tabs list
   const tabs = [
     { label: "Occurrence Report", icon: "🛡️" },
     { label: "Teddy Bear Tracking", icon: "🧸" },
     { label: "Shift Report", icon: "📋" },
     { label: "Paramedic Status", icon: "📊" },
+    { label: "AI Empty Form", icon: "🤖" }, 
   ];
 
   return (
@@ -42,6 +46,8 @@ export default function EMSForms() {
         {activeTab === 1 && <TeddyBearForm />}
         {activeTab === 2 && <ShiftReport />}
         {activeTab === 3 && <ParamedicStatus />}
+        {/* 3. This line tells the browser to show the new form when clicked */}
+        {activeTab === 4 && <EmptyFormAI />}
       </div>
       <div
         style={{
