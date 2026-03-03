@@ -4,11 +4,17 @@ const { getParamedicState, updateParamedicState } = require("../utils/memoryStor
 const { cleanTranscription } = require("./transcriptionCleaner");
 const { detectForms } = require("./formDetectiveAgent");
 const { extractFormFields } = require("./extractionAgent");
-const { evaluateGuardrails } = require("./guardrailAgent");
 const { summarizeConversation } = require("./summarizerAgent");
 const { answerQuestion } = require("./knowledgeAgent");
 const { handleAdminTask } = require("./adminAgent");
-const { getMockWeather, getMockDirections } = require("../utils/mockLiveData");
+const { handleApprovalRequest } = require("./approvalAgent");
+const {
+  getMockWeather,
+  getMockDirections,
+  getStationCity,
+} = require("../utils/mockLiveData");
+const { getDirections: getMapboxDirections } = require("../utils/mapboxDirections");
+const { getScene, upsertScene } = require("../utils/sceneSessions");
 
 const crisisKeywords = [
   "cardiac arrest",
@@ -49,8 +55,26 @@ const medicalKeywords = [
 ];
 
 const adminKeywords = ["uniform", "vacation", "overtime", "missed meal"];
+const approvalKeywords = [
+  "uniform",
+  "vacation",
+  "overtime",
+  "missed meal",
+  "certification",
+  "training",
+  "equipment",
+  "order",
+  "request",
+  "approval",
+];
 const weatherKeywords = ["weather", "forecast", "temperature", "snow", "rain", "wind"];
-const directionsKeywords = ["directions", "route", "fastest way", "eta", "drive to"];
+const directionsKeywords = [
+  "directions",
+  "route",
+  "fastest",
+  "eta",
+  "drive to",
+];
 const stressKeywords = [
   "tough call",
   "rough",
@@ -60,11 +84,13 @@ const stressKeywords = [
   "overwhelmed",
 ];
 
+const questionStarters = ["what", "how", "dose", "protocol", "should", "can", "when", "where"];
+
 const silenceTokens = ["...", "..", "…"];
 
 const microChecklists = [
   {
-    match: ["stroke", "fast", "cincinnati"],
+    match: [/\\bstroke\\b/i, /\\bcincinnati\\b/i, /\\bfast\\b/i],
     steps: [
       "FAST/Cincinnati check + last known well",
       "Check glucose + maintain oxygenation",
@@ -72,7 +98,7 @@ const microChecklists = [
     ],
   },
   {
-    match: ["overdose", "opioid", "naloxone"],
+    match: [/\\boverdose\\b/i, /\\bopioid\\b/i, /\\bnaloxone\\b/i],
     steps: [
       "Airway + assist ventilation",
       "Naloxone titrate to respirations",
@@ -80,7 +106,7 @@ const microChecklists = [
     ],
   },
   {
-    match: ["anaphylaxis", "allergic", "epi"],
+    match: [/\\banaphylaxis\\b/i, /\\ballergic\\b/i, /\\bepi\\b/i],
     steps: [
       "IM epinephrine + high-flow O2",
       "Monitor airway + consider adjuncts",
@@ -109,6 +135,11 @@ function detectAdminIntent(text) {
   return adminKeywords.some((keyword) => lower.includes(keyword));
 }
 
+function detectApprovalIntent(text) {
+  const lower = text.toLowerCase();
+  return approvalKeywords.some((keyword) => lower.includes(keyword));
+}
+
 function detectWeatherIntent(text) {
   const lower = text.toLowerCase();
   return weatherKeywords.some((keyword) => lower.includes(keyword));
@@ -124,6 +155,13 @@ function detectStressCue(text) {
   return stressKeywords.some((keyword) => lower.includes(keyword));
 }
 
+function isQuestion(text) {
+  const trimmed = String(text || "").trim().toLowerCase();
+  if (!trimmed) return false;
+  if (trimmed.endsWith("?")) return true;
+  return questionStarters.some((starter) => trimmed.startsWith(starter));
+}
+
 function detectSilence(text) {
   const trimmed = String(text || "").trim();
   if (trimmed.length === 0) return true;
@@ -132,9 +170,8 @@ function detectSilence(text) {
 }
 
 function getMicroChecklist(text) {
-  const lower = text.toLowerCase();
   for (const checklist of microChecklists) {
-    if (checklist.match.some((term) => lower.includes(term))) {
+    if (checklist.match.some((term) => term.test(text))) {
       return checklist.steps;
     }
   }
@@ -154,6 +191,30 @@ function buildSupportLine() {
   return "That sounded like a hard one. Take a breath — I've got the paperwork.";
 }
 
+function detectSceneTask(text) {
+  const lower = text.toLowerCase();
+  if (lower.includes("airway")) return "airway";
+  if (lower.includes("iv")) return "iv";
+  if (lower.includes("monitor")) return "monitoring";
+  if (lower.includes("transport")) return "transport";
+  if (lower.includes("docs") || lower.includes("documentation")) return "documentation";
+  return "";
+}
+
+function buildSceneSummary(scene) {
+  if (!scene) return "";
+  const participants = (scene.participants || [])
+    .map((p) => p.name || p.paramedic_id)
+    .join(", ");
+  const tasks = scene.tasks || {};
+  const taskLines = Object.entries(tasks)
+    .map(([task, owner]) => `${task}: ${owner}`)
+    .join(" | ");
+  return `Scene ${scene.scene_id}. Participants: ${participants || "unknown"}. Tasks: ${
+    taskLines || "unassigned"
+  }.`;
+}
+
 function extractCity(text, cities) {
   const lower = text.toLowerCase();
   return cities.find((city) => lower.includes(city.toLowerCase())) || "";
@@ -168,12 +229,56 @@ function buildWeatherReply(city) {
   return `${city} weather: ${weather.condition}, ${weather.tempC}°C, wind ${weather.windKph} kph.${alertPart}`;
 }
 
-function buildDirectionsReply(fromCity, toCity) {
-  const route = getMockDirections(fromCity, toCity);
+async function buildDirectionsReply(fromCity, toCity) {
+  let origin = fromCity;
+  let destination = toCity;
+  if (/^toronto$/i.test(origin)) origin = "Toronto, Ontario";
+  if (/^ottawa$/i.test(origin)) origin = "Ottawa, Ontario";
+  if (!destination.includes(",") && /\\d+/.test(destination)) {
+    destination = `${destination}, Toronto, Ontario`;
+  }
+
+  const liveRoute = await getMapboxDirections(origin, destination);
+  const route = liveRoute || getMockDirections(fromCity, toCity);
   if (!route) {
-    return `I don't have a route estimate from ${fromCity} to ${toCity} yet.`;
+    return `I don't have a route estimate from ${origin} to ${destination} yet.`;
   }
   return `${route.summary}. ETA ${route.durationMin} mins (${route.distanceKm} km).`;
+}
+
+function parseRouteFromMessage(text) {
+  const match = text.match(/from\s+(.+?)\s+to\s+(.+)/i);
+  if (!match) return null;
+  return {
+    from: match[1].trim(),
+    to: match[2].trim(),
+  };
+}
+
+function extractDestination(text) {
+  const match = text.match(/(?:to|towards)\s+(.+)/i);
+  return match ? match[1].trim() : "";
+}
+
+function normalizeOrigin(origin) {
+  if (!origin) return origin;
+  if (/station\\s*\\d+/i.test(origin)) {
+    return "Toronto, Ontario";
+  }
+  return origin;
+}
+
+function normalizeDestination(destination, cities) {
+  if (!destination) return destination;
+  const hasCity = cities.some((city) =>
+    destination.toLowerCase().includes(city.toLowerCase())
+  );
+  const hasComma = destination.includes(",");
+  const hasStreetNumber = /\\d+/.test(destination);
+  if (!hasCity && !hasComma && hasStreetNumber) {
+    return `${destination}, Toronto, Ontario`;
+  }
+  return destination;
 }
 
 async function getParamedicProfile(paramedicId) {
@@ -305,6 +410,52 @@ async function handleConversation({
   const state = getParamedicState(paramedicId);
   const profile = await getParamedicProfile(paramedicId);
   const cities = ["Huntsville", "Bracebridge", "Barrie", "Toronto", "Ottawa"];
+  const sceneId = context.sceneId || "";
+  const roleOnScene = context.roleOnScene || "";
+  const allowMedical = detectMedicalIntent(cleaned) && !(sceneId && !isQuestion(cleaned));
+
+  let sceneState = null;
+  if (sceneId) {
+    sceneState = await getScene(sceneId);
+    const task = detectSceneTask(cleaned);
+    const participantName = profile?.first_name || paramedicId;
+    const participants = sceneState?.participants || [];
+    const existing = participants.find((p) => p.paramedic_id === paramedicId);
+    const updatedParticipants = existing
+      ? participants.map((p) =>
+          p.paramedic_id === paramedicId
+            ? {
+                ...p,
+                name: participantName,
+                roleOnScene: roleOnScene || p.roleOnScene,
+                lastUpdate: new Date(),
+              }
+            : p
+        )
+      : [
+          ...participants,
+          {
+            paramedic_id: paramedicId,
+            name: participantName,
+            roleOnScene,
+            lastUpdate: new Date(),
+          },
+        ];
+    const tasks = { ...(sceneState?.tasks || {}) };
+    if (task) {
+      tasks[task] = participantName;
+    }
+    const notes = [
+      ...(sceneState?.notes || []),
+      { at: new Date(), by: participantName, text: cleaned },
+    ].slice(-20);
+
+    sceneState = await upsertScene(sceneId, {
+      participants: updatedParticipants,
+      tasks,
+      notes,
+    });
+  }
 
   if (detectSilence(cleaned)) {
     return {
@@ -348,8 +499,10 @@ async function handleConversation({
   }
 
   const detectedForms = detectForms(cleaned);
-  const formUpdates = extractFormFields(cleaned, detectedForms);
-  const guardrail = evaluateGuardrails(formUpdates);
+  const { updates: formUpdates, guardrail } = extractFormFields(
+    cleaned,
+    detectedForms
+  );
 
   if (detectedForms.length > 0) {
     state.openForms = Array.from(new Set([...state.openForms, ...detectedForms]));
@@ -367,24 +520,41 @@ async function handleConversation({
     const city = extractCity(cleaned, cities) || profile?.station || "Huntsville";
     responseText = buildWeatherReply(city);
   } else if (detectDirectionsIntent(cleaned)) {
-    const fromCity = extractCity(cleaned, cities) || profile?.station || "Huntsville";
-    const toCity = extractCity(cleaned.replace(fromCity, ""), cities) || "Barrie";
-    responseText = buildDirectionsReply(fromCity, toCity);
-  } else if (detectMedicalIntent(cleaned)) {
-    responseText = await answerQuestion(cleaned, role);
+    const parsed = parseRouteFromMessage(cleaned);
+    const stationOrigin = getStationCity(profile?.station) || profile?.station || "";
+    const origin = normalizeOrigin(parsed?.from || stationOrigin || "Huntsville");
+    const destinationRaw =
+      parsed?.to ||
+      extractDestination(cleaned) ||
+      extractCity(cleaned, cities) ||
+      "Barrie";
+    const destination = normalizeDestination(destinationRaw, cities);
+    responseText = await buildDirectionsReply(origin, destination);
+  } else if (allowMedical) {
+    try {
+      responseText = await answerQuestion(cleaned, role);
+    } catch (error) {
+      responseText =
+        "The medical knowledge base is temporarily unavailable. Please start ChromaDB and try again.";
+    }
+  } else if (detectApprovalIntent(cleaned)) {
+    const approvalResult = await handleApprovalRequest(paramedicId, cleaned);
+    responseText = approvalResult.response;
   } else if (detectAdminIntent(cleaned)) {
-    responseText = handleAdminTask(cleaned);
+    const adminResult = await handleAdminTask(paramedicId, cleaned);
+    responseText = adminResult.response;
   } else {
     const summary = await summarizeConversation(recentMessages);
+    const sceneSummary = buildSceneSummary(sceneState);
     responseText = await generateBuddyResponse({
       profile,
-      message: cleaned,
+      message: sceneSummary ? `${sceneSummary}\n${cleaned}` : cleaned,
       crisisMode: state.crisisMode,
       summary,
     });
   }
 
-  const checklist = getMicroChecklist(cleaned);
+  const checklist = detectDirectionsIntent(cleaned) ? null : getMicroChecklist(cleaned);
   if (checklist) {
     responseText = `${responseText}\nMini-checklist: ${checklist.join(" | ")}`;
   }
@@ -415,6 +585,7 @@ async function handleConversation({
     formUpdates,
     guardrail,
     autoExport: guardrail.approved && detectedForms.length > 0,
+    scene: sceneState,
   };
 }
 

@@ -85,7 +85,26 @@ function extractFormFields(message, detectedForms = []) {
     };
   }
 
-  return updates;
+  const guardrail = validateFormUpdates(updates);
+  return { updates, guardrail };
 }
 
-module.exports = { extractFormFields };
+function validateFormUpdates(formUpdates = {}) {
+  const issues = [];
+  if (formUpdates.occurrenceReport) {
+    if (!formUpdates.occurrenceReport.location?.value) {
+      issues.push({ form: "occurrenceReport", field: "location", issue: "missing" });
+    }
+    if (!formUpdates.occurrenceReport.incidentType?.value) {
+      issues.push({ form: "occurrenceReport", field: "incidentType", issue: "missing" });
+    }
+  }
+  if (formUpdates.teddyBearTracking) {
+    if (!formUpdates.teddyBearTracking.childName?.value) {
+      issues.push({ form: "teddyBearTracking", field: "childName", issue: "missing" });
+    }
+  }
+  return { approved: issues.length === 0, issues };
+}
+
+module.exports = { extractFormFields, validateFormUpdates };

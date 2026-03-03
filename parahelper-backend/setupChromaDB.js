@@ -1,7 +1,7 @@
 require("dotenv").config();
 
 const { ChromaClient } = require("chromadb");
-const { medicalKnowledge } = require("./knowledge/medicalKnowledge");
+const medicalKnowledge = require("./knowledge/medicalKnowledge.json");
 const { createEmbedding } = require("./utils/embeddings");
 
 const COLLECTION_NAME = "parahelper-medical-knowledge";

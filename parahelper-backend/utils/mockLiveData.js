@@ -59,6 +59,12 @@ const directionsByRoute = {
   },
 };
 
+const stationCity = {
+  "Station 7": "Toronto, Ontario",
+  "Station 3": "Huntsville, Ontario",
+  "Station 1": "Bracebridge, Ontario",
+};
+
 function getMockWeather(city) {
   if (!city) return null;
   return weatherByCity[city] || null;
@@ -70,4 +76,9 @@ function getMockDirections(from, to) {
   return directionsByRoute[key] || null;
 }
 
-module.exports = { getMockWeather, getMockDirections };
+function getStationCity(station) {
+  if (!station) return "";
+  return stationCity[station] || "";
+}
+
+module.exports = { getMockWeather, getMockDirections, getStationCity };
