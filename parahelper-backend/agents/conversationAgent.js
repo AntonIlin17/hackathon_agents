@@ -487,6 +487,28 @@ function buildLoginGreeting({ profile, state, context }) {
   return `Morning ${name}. ${partnerLine} ${stationLine} ${weatherLine}`.trim();
 }
 
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function containsName(text, name) {
+  if (!name) return false;
+  const pattern = new RegExp(`\\b${escapeRegExp(name)}\\b`, "i");
+  return pattern.test(text);
+}
+
+function scrubName(text, name) {
+  if (!name) return text;
+  const pattern = new RegExp(`\\b${escapeRegExp(name)}\\b`, "gi");
+  return text
+    .replace(pattern, "")
+    .replace(/\s{2,}/g, " ")
+    .replace(/\s+,/g, ",")
+    .replace(/^[,\s]+/g, "")
+    .replace(/\s+\./g, ".")
+    .trim();
+}
+
 function buildShiftEndSummary({ name, state, summary }) {
   const openForms = state.openForms.length;
   const openLine =
@@ -518,6 +540,7 @@ async function generateBuddyResponse({
   crisisMode,
   summary,
   recentMessages = [],
+  allowName = true,
 }) {
   const client = getOpenRouterClient();
   const name = profile?.first_name || "there";
@@ -525,6 +548,9 @@ async function generateBuddyResponse({
     ? "Use short, sharp responses. No small talk. Give only critical info."
     : "Keep it natural, short, and direct. No filler. Sound like a shift buddy.";
   const recentContext = formatRecentMessages(recentMessages);
+  const nameInstruction = allowName
+    ? "You may use their name sparingly."
+    : "Do not use the paramedic's name in this reply.";
 
   const response = await client.chat.completions.create({
     model: "google/gemini-2.5-flash",
@@ -535,13 +561,14 @@ async function generateBuddyResponse({
           "You are ParaHelper, a voice-first AI companion for paramedics. " +
           modeInstruction +
           "Avoid repeating the paramedic's name in every reply. Use their name at most once per 4 messages. " +
-          "Keep replies short, direct, and human. " +
+          nameInstruction +
+          " Keep replies short, direct, and human. " +
           "Stay consistent with the recent conversation and continue the thread.",
       },
       {
         role: "user",
         content:
-          `Paramedic name: ${name}\n` +
+          (allowName ? `Paramedic name: ${name}\n` : "") +
           `Conversation summary: ${summary || "None"}\n` +
           (recentContext ? `Recent messages:\n${recentContext}\n` : "") +
           `Message: ${message}`,
@@ -550,7 +577,8 @@ async function generateBuddyResponse({
     temperature: crisisMode ? 0.1 : 0.4,
   });
 
-  return response?.choices?.[0]?.message?.content || "";
+  const content = response?.choices?.[0]?.message?.content || "";
+  return allowName ? content : scrubName(content, name);
 }
 
 async function handleConversation({
@@ -717,7 +745,7 @@ async function handleConversation({
       responseText += "\nDocumentation check: vitals not logged.";
     }
   } else if (context.event === "shift_end") {
-    const summary = await summarizeConversation(recentMessages);
+    const summary = context.summary || (await summarizeConversation(recentMessages));
     responseText = buildShiftEndSummary({
       name: profile?.first_name || "there",
       state,
@@ -768,14 +796,16 @@ async function handleConversation({
     const fixPrompt = buildOneTapFix(guardrail);
     responseText = fixPrompt || buildFormHelpResponse(formFocus);
   } else {
-    const summary = await summarizeConversation(recentMessages);
+    const summary = context.summary || (await summarizeConversation(recentMessages));
     const sceneSummary = buildSceneSummary(sceneState);
+    const allowName = (state.nameUseCounter || 0) >= 3;
     responseText = await generateBuddyResponse({
       profile,
       message: sceneSummary ? `${sceneSummary}\n${cleaned}` : cleaned,
       crisisMode: state.crisisMode,
       summary,
       recentMessages,
+      allowName,
     });
   }
 
@@ -807,6 +837,12 @@ async function handleConversation({
     responseText = `${responseText} ${state.highAcuityCount} high-acuity calls today—hydrate when you can.`;
   }
 
+  const name = profile?.first_name || "";
+  if (containsName(responseText, name)) {
+    state.nameUseCounter = 0;
+  } else {
+    state.nameUseCounter = (state.nameUseCounter || 0) + 1;
+  }
   state.lastSeenAt = new Date().toISOString();
   updateParamedicState(paramedicId, state);
   await saveMemoryToMongo(paramedicId, state);
