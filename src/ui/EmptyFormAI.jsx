@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { COLORS, styles } from "./styles";
+import { exportForms } from "../api";
 
 export default function EmptyForm() {
   const now = new Date();
@@ -18,6 +19,7 @@ export default function EmptyForm() {
   });
 
   const [submitted, setSubmitted] = useState(false);
+  const [status, setStatus] = useState({ loading: false, message: "", error: "" });
 
   const u = (key) => (e) =>
     setForm((p) => ({
@@ -25,13 +27,44 @@ export default function EmptyForm() {
       [key]: e.target.type === "checkbox" ? e.target.checked : e.target.value,
     }));
 
+  const handleSubmit = async () => {
+    setStatus({ loading: true, message: "", error: "" });
+    try {
+      const payload = {
+        adminRequest: {
+          type: { value: form.requestType },
+          requester: { value: form.requesterName },
+          raw: form,
+        },
+      };
+      const res = await exportForms(payload);
+      if (res.success) {
+        setStatus({ loading: false, message: res.message, error: "" });
+        setSubmitted(true);
+      } else {
+        setStatus({
+          loading: false,
+          message: "",
+          error: res.message || "Export failed.",
+        });
+      }
+    } catch (err) {
+      setStatus({
+        loading: false,
+        message: "",
+        error: err.message || "Export failed.",
+      });
+    }
+  };
+
   if (submitted)
     return (
       <div style={styles.card}>
         <div style={styles.cardBody}>
           <div style={styles.submitted}>
             <span style={{ fontSize: 24 }}>📅</span> Request Logged
-            Awaiting Administrative Review — {now.toLocaleDateString()}
+            — {status.message || "Awaiting Administrative Review"} —{" "}
+            {now.toLocaleDateString()}
           </div>
           <div style={styles.btnRow}>
             <button style={styles.btnSecondary} onClick={() => setSubmitted(false)}>
@@ -153,10 +186,25 @@ export default function EmptyForm() {
           >
             Reset
           </button>
-          <button style={styles.btnPrimary} onClick={() => setSubmitted(true)}>
-            Submit Request
+          <button
+            style={styles.btnPrimary}
+            onClick={handleSubmit}
+            disabled={status.loading}
+          >
+            {status.loading ? "Submitting..." : "Submit Request"}
           </button>
         </div>
+        {status.error && (
+          <div
+            style={{
+              marginTop: 12,
+              fontSize: 12,
+              color: COLORS.accent,
+            }}
+          >
+            {status.error}
+          </div>
+        )}
       </div>
     </div>
   );
