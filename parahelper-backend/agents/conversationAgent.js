@@ -526,6 +526,14 @@ function scrubName(text, name) {
     .trim();
 }
 
+function stripEchoGreeting(text) {
+  const cleaned = String(text || "").trim();
+  if (!cleaned) return cleaned;
+  const greetingPattern =
+    /^(yo|hey|hi|hello|what'?s up|wsp|sup)[,!.\s]+/i;
+  return cleaned.replace(greetingPattern, "").trim();
+}
+
 function buildShiftEndSummary({ name, state, summary }) {
   const openForms = state.openForms.length;
   const openLine =
@@ -597,7 +605,9 @@ async function generateBuddyResponse({
   });
 
   const content = response?.choices?.[0]?.message?.content || "";
-  return allowName ? content : scrubName(content, name);
+  const withoutGreeting = stripEchoGreeting(content);
+  const finalText = withoutGreeting || content;
+  return allowName ? finalText : scrubName(finalText, name);
 }
 
 async function handleConversation({
