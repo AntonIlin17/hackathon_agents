@@ -321,6 +321,23 @@ function buildOneTapFix(guardrail) {
   return `Quick check: what's the ${fieldLabel} for the ${issue.form}?`;
 }
 
+function buildMissingFieldsPrompt(guardrail) {
+  if (!guardrail || guardrail.approved || guardrail.issues.length === 0) {
+    return "";
+  }
+  const fields = guardrail.issues.map((issue) =>
+    issue.field.replace(/([A-Z])/g, " $1").toLowerCase()
+  );
+  const uniqueFields = Array.from(new Set(fields));
+  if (uniqueFields.length === 1) {
+    return `What's the ${uniqueFields[0]}?`;
+  }
+  if (uniqueFields.length === 2) {
+    return `I need the ${uniqueFields[0]} and ${uniqueFields[1]}.`;
+  }
+  return `I need the ${uniqueFields.join(", ")}.`;
+}
+
 function buildSupportLine() {
   return "That was rough. I've got the paperwork.";
 }
@@ -560,6 +577,7 @@ async function generateBuddyResponse({
         content:
           "You are ParaHelper, a voice-first AI companion for paramedics. " +
           modeInstruction +
+          "Mirror the user's tone, slang, and brevity without overdoing it. " +
           "Avoid repeating the paramedic's name in every reply. Use their name at most once per 4 messages. " +
           nameInstruction +
           " Keep replies short, direct, and human. " +
@@ -710,8 +728,15 @@ async function handleConversation({
   }
 
   const detectedForms = detectForms(cleaned);
+  if (detectedForms.length > 0) {
+    state.activeForm = detectedForms[0];
+  }
   const formFocus =
-    detectedForms.length > 0 ? detectedForms : state.openForms || [];
+    detectedForms.length > 0
+      ? detectedForms
+      : state.activeForm
+        ? [state.activeForm]
+        : state.openForms || [];
   const { updates: formUpdates, guardrail } = extractFormFields(cleaned, formFocus);
 
   if (detectedForms.length > 0) {
@@ -719,7 +744,17 @@ async function handleConversation({
   }
 
   let responseText = "";
-  if (context.event === "dispatch") {
+  let handledByForm = false;
+  if (formFocus.length > 0 && (!context.event || context.event === "checkin" || context.event === "post_call")) {
+    const missingPrompt = buildMissingFieldsPrompt(guardrail);
+    const fixPrompt = buildOneTapFix(guardrail);
+    responseText =
+      missingPrompt ||
+      fixPrompt ||
+      buildFormHelpResponse(formFocus) ||
+      "Got it. What else should I add to the form?";
+    handledByForm = true;
+  } else if (context.event === "dispatch") {
     const brief = buildDispatchBrief(cleaned);
     responseText = `Dispatch brief: ${brief.highlights.join(", ") || "No immediate red flags"}.`;
     if (brief.suggestions.length > 0) {
@@ -792,9 +827,6 @@ async function handleConversation({
   } else if (detectAdminIntent(cleaned)) {
     const adminResult = await handleAdminTask(paramedicId, cleaned);
     responseText = adminResult.response;
-  } else if (formFocus.length > 0) {
-    const fixPrompt = buildOneTapFix(guardrail);
-    responseText = fixPrompt || buildFormHelpResponse(formFocus);
   } else {
     const summary = context.summary || (await summarizeConversation(recentMessages));
     const sceneSummary = buildSceneSummary(sceneState);
@@ -823,7 +855,7 @@ async function handleConversation({
   }
 
   const fixPrompt = buildOneTapFix(guardrail);
-  if (fixPrompt && !responseText.includes(fixPrompt)) {
+  if (fixPrompt && !responseText.includes(fixPrompt) && !handledByForm) {
     responseText = `${responseText}\n${fixPrompt}`;
   }
 
@@ -842,6 +874,12 @@ async function handleConversation({
     state.nameUseCounter = 0;
   } else {
     state.nameUseCounter = (state.nameUseCounter || 0) + 1;
+  }
+  if (formFocus.length > 0 && guardrail.approved) {
+    state.openForms = state.openForms.filter((form) => !formFocus.includes(form));
+    if (state.activeForm && formFocus.includes(state.activeForm)) {
+      state.activeForm = "";
+    }
   }
   state.lastSeenAt = new Date().toISOString();
   updateParamedicState(paramedicId, state);

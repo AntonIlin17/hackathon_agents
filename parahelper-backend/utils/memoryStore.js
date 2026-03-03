@@ -16,6 +16,7 @@ function getParamedicState(paramedicId) {
       lastModeSwitchAt: null,
       openForms: [],
       nameUseCounter: 0,
+      activeForm: "",
       lastSeenAt: null,
     });
   }
