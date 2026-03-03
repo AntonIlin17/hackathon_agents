@@ -197,18 +197,18 @@ function detectFormHelp(text) {
 
 function buildFormHelpResponse(detectedForms) {
   if (detectedForms.includes("occurrenceReport")) {
-    return "This sounds like an Occurrence Report. Was it call-related, station-related, or vehicle-related?";
+    return "Occurrence Report. Call-related, station-related, or vehicle-related?";
   }
   if (detectedForms.includes("teddyBearTracking")) {
-    return "Sounds like a Teddy Bear Tracking form. Who received the bear and where?";
+    return "Teddy Bear Tracking. Who got it and where?";
   }
   if (detectedForms.includes("shiftReport")) {
-    return "Sounds like the Shift Report. Which date or month should I pull?";
+    return "Shift Report. Which date or month?";
   }
   if (detectedForms.includes("statusReport")) {
-    return "Sounds like the Paramedic Status Report. What status item do you want to check?";
+    return "Paramedic Status Report. Which item?";
   }
-  return "I can help with: Occurrence Report, Teddy Bear Tracking, Shift Report, or Paramedic Status. Which one do you need?";
+  return "Which form: Occurrence, Teddy Bear, Shift, or Status?";
 }
 
 function extractVitals(text) {
@@ -322,7 +322,7 @@ function buildOneTapFix(guardrail) {
 }
 
 function buildSupportLine() {
-  return "That sounded like a hard one. Take a breath — I've got the paperwork.";
+  return "That was rough. I've got the paperwork.";
 }
 
 function detectSceneTask(text) {
@@ -360,7 +360,7 @@ function buildWeatherReply(city) {
     return "I don't have a weather snapshot for your area yet.";
   }
   const alertPart = weather.alert ? ` ${weather.alert}.` : "";
-  return `${city} weather: ${weather.condition}, ${weather.tempC}°C, wind ${weather.windKph} kph.${alertPart}`;
+  return `${city}: ${weather.condition}, ${weather.tempC}°C, wind ${weather.windKph} kph.${alertPart}`;
 }
 
 async function buildDirectionsReply(fromCity, toCity) {
@@ -480,24 +480,24 @@ function buildProactiveNudge(state) {
 function buildLoginGreeting({ profile, state, context }) {
   const name = profile?.first_name || "there";
   const partnerLine = state.partnerName
-    ? `You're on with ${state.partnerName} today.`
+    ? `Partner: ${state.partnerName}.`
     : "";
   const weatherLine = context.weatherAlert ? `${context.weatherAlert} ` : "";
   const stationLine = profile?.station ? `Station ${profile.station}.` : "";
-  return `Morning ${name}! ${partnerLine} ${stationLine} ${weatherLine}`.trim();
+  return `Morning ${name}. ${partnerLine} ${stationLine} ${weatherLine}`.trim();
 }
 
 function buildShiftEndSummary({ name, state, summary }) {
   const openForms = state.openForms.length;
   const openLine =
     openForms > 0
-      ? `You've got ${openForms} form${openForms > 1 ? "s" : ""} still open.`
+      ? `${openForms} form${openForms > 1 ? "s" : ""} still open.`
       : "All forms are done.";
   const patternLine =
     state.missedMeals >= 3
-      ? "Noticed a few missed meals this week — want me to file them?"
+      ? "Missed a few meals this week. Want me to file them?"
       : "";
-  return `Good shift today ${name}. ${openLine} ${patternLine} ${summary || ""}`.trim();
+  return `Good shift, ${name}. ${openLine} ${patternLine} ${summary || ""}`.trim();
 }
 
 async function generateBuddyResponse({ profile, message, crisisMode, summary }) {
@@ -505,7 +505,7 @@ async function generateBuddyResponse({ profile, message, crisisMode, summary }) 
   const name = profile?.first_name || "there";
   const modeInstruction = crisisMode
     ? "Use short, sharp responses. No small talk. Give only critical info."
-    : "Be conversational, friendly, and concise. Sound like a shift buddy.";
+    : "Keep it natural, short, and direct. No filler. Sound like a shift buddy.";
 
   const response = await client.chat.completions.create({
     model: "google/gemini-2.5-flash",
@@ -516,7 +516,7 @@ async function generateBuddyResponse({ profile, message, crisisMode, summary }) 
           "You are ParaHelper, a voice-first AI companion for paramedics. " +
           modeInstruction +
           "Avoid repeating the paramedic's name in every reply. Use their name at most once per 4 messages. " +
-          "Keep responses natural, human, and concise.",
+          "Keep replies short, direct, and human.",
       },
       {
         role: "user",
@@ -683,13 +683,13 @@ async function handleConversation({
   } else if (context.event === "post_call" || context.event === "checkin") {
     const busyNote =
       state.callCount >= 4
-        ? `Busy stretch — ${state.callCount} calls so far.`
-        : "How are you holding up?";
+        ? `Busy stretch: ${state.callCount} calls.`
+        : "Quick check-in.";
     const acuityNote =
       state.highAcuityCount >= 2
-        ? `High-acuity count is ${state.highAcuityCount}.`
+        ? `High-acuity: ${state.highAcuityCount}.`
         : "";
-    responseText = `Quick check-in. ${busyNote} ${acuityNote} Need anything before the next call?`.trim();
+    responseText = `${busyNote} ${acuityNote} Need anything before the next call?`.trim();
     state.lastCheckInAt = new Date().toISOString();
   } else if (context.event === "handoff") {
     responseText = await buildHandoffSummary(cleaned);
@@ -780,7 +780,7 @@ async function handleConversation({
   }
 
   if (state.highAcuityCount >= 4) {
-    responseText = `${responseText} You’ve handled ${state.highAcuityCount} high-acuity calls—consider a hydration check.`;
+    responseText = `${responseText} ${state.highAcuityCount} high-acuity calls today—hydrate when you can.`;
   }
 
   state.lastSeenAt = new Date().toISOString();
