@@ -7,7 +7,8 @@ router.post("/message", async (req, res) => {
   try {
     const { paramedicId, role, message, recentMessages, context, inputType } =
       req.body || {};
-    if (!paramedicId || !role || !message) {
+    const hasEvent = Boolean(context?.event);
+    if (!paramedicId || !role || (!message && !hasEvent)) {
       return res
         .status(400)
         .json({ error: "paramedicId, role, and message are required." });

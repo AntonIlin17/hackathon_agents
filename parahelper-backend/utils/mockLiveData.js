@@ -65,6 +65,13 @@ const stationCity = {
   "Station 1": "Bracebridge, Ontario",
 };
 
+const destinationByCondition = {
+  trauma: "Closest trauma center: Sunnybrook Health Sciences Centre",
+  stroke: "Closest stroke center: Royal Victoria Regional Health Centre",
+  cardiac: "PCI-capable center: Southlake Regional Health Centre",
+  pediatric: "Pediatric center: SickKids Hospital",
+};
+
 function getMockWeather(city) {
   if (!city) return null;
   return weatherByCity[city] || null;
@@ -81,4 +88,14 @@ function getStationCity(station) {
   return stationCity[station] || "";
 }
 
-module.exports = { getMockWeather, getMockDirections, getStationCity };
+function getDestinationRecommendation(type) {
+  if (!type) return "";
+  return destinationByCondition[type] || "";
+}
+
+module.exports = {
+  getMockWeather,
+  getMockDirections,
+  getStationCity,
+  getDestinationRecommendation,
+};

@@ -12,9 +12,10 @@ const {
   getMockWeather,
   getMockDirections,
   getStationCity,
+  getDestinationRecommendation,
 } = require("../utils/mockLiveData");
 const { getDirections: getMapboxDirections } = require("../utils/mapboxDirections");
-const { getScene, upsertScene } = require("../utils/sceneSessions");
+const { getScene, upsertScene, appendAudit } = require("../utils/sceneSessions");
 
 const crisisKeywords = [
   "cardiac arrest",
@@ -83,6 +84,24 @@ const stressKeywords = [
   "shaken",
   "overwhelmed",
 ];
+const redFlagKeywords = [
+  "unresponsive",
+  "unequal pupils",
+  "chest pain radiating",
+  "stroke signs",
+  "severe bleeding",
+  "no pulse",
+  "gcs",
+];
+const sceneSafetyKeywords = [
+  "aggressive bystander",
+  "scene not safe",
+  "fire not out",
+  "traffic not controlled",
+  "weapon",
+];
+const destinationKeywords = ["destination", "where should we go", "closest hospital"];
+const pediatricKeywords = ["pediatric", "infant", "child", "toddler", "year old"];
 
 const questionStarters = ["what", "how", "dose", "protocol", "should", "can", "when", "where"];
 
@@ -155,6 +174,99 @@ function detectStressCue(text) {
   return stressKeywords.some((keyword) => lower.includes(keyword));
 }
 
+function detectRedFlags(text) {
+  const lower = text.toLowerCase();
+  return redFlagKeywords.filter((keyword) => lower.includes(keyword));
+}
+
+function detectSceneSafety(text) {
+  const lower = text.toLowerCase();
+  return sceneSafetyKeywords.filter((keyword) => lower.includes(keyword));
+}
+
+function detectDestinationIntent(text) {
+  const lower = text.toLowerCase();
+  return destinationKeywords.some((keyword) => lower.includes(keyword));
+}
+
+function extractVitals(text) {
+  const vitals = {};
+  const bp = text.match(/bp\s*(\d{2,3})\s*\/\s*(\d{2,3})/i);
+  const hr = text.match(/hr\s*(\d{2,3})/i);
+  const rr = text.match(/rr\s*(\d{1,2})/i);
+  const spo2 = text.match(/spo2\s*(\d{2,3})/i);
+  const gcs = text.match(/gcs\s*(\d{1,2})/i);
+  if (bp) vitals.bp = `${bp[1]}/${bp[2]}`;
+  if (hr) vitals.hr = hr[1];
+  if (rr) vitals.rr = rr[1];
+  if (spo2) vitals.spo2 = spo2[1];
+  if (gcs) vitals.gcs = gcs[1];
+  return vitals;
+}
+
+function buildDestinationAdvisor(text) {
+  const lower = text.toLowerCase();
+  if (lower.includes("stroke")) return getDestinationRecommendation("stroke");
+  if (lower.includes("trauma") || lower.includes("mva")) return getDestinationRecommendation("trauma");
+  if (lower.includes("cardiac") || lower.includes("stemi")) return getDestinationRecommendation("cardiac");
+  if (detectPediatric(text)) return getDestinationRecommendation("pediatric");
+  return "";
+}
+
+function extractDestinationFromRecommendation(recommendation) {
+  const match = String(recommendation || "").match(/:\s*(.+)$/);
+  return match ? match[1].trim() : "";
+}
+
+function detectPediatric(text) {
+  const lower = text.toLowerCase();
+  if (pediatricKeywords.some((keyword) => lower.includes(keyword))) return true;
+  const ageMatch = lower.match(/\b(\d{1,2})\s*year/);
+  if (ageMatch) {
+    const age = Number(ageMatch[1]);
+    return Number.isFinite(age) && age < 12;
+  }
+  return false;
+}
+
+function buildDispatchBrief(message) {
+  const flags = detectRedFlags(message);
+  const suggestions = [];
+  if (message.toLowerCase().includes("mva")) suggestions.push("Trauma protocol");
+  if (message.toLowerCase().includes("seizure")) suggestions.push("Seizure protocol");
+  if (message.toLowerCase().includes("stroke")) suggestions.push("Stroke protocol");
+  const equipment = [];
+  if (message.toLowerCase().includes("pediatric")) {
+    equipment.push("Pediatric airway kit");
+    equipment.push("Weight-based dosing chart");
+  }
+  return {
+    highlights: flags,
+    suggestions,
+    equipment,
+  };
+}
+
+async function buildHandoffSummary(message) {
+  const client = getOpenRouterClient();
+  const response = await client.chat.completions.create({
+    model: "google/gemini-2.5-flash",
+    messages: [
+      {
+        role: "system",
+        content:
+          "Create a concise SBAR handoff summary (4 short lines). " +
+          "Use the provided notes only.",
+      },
+      {
+        role: "user",
+        content: message,
+      },
+    ],
+    temperature: 0.2,
+  });
+  return response?.choices?.[0]?.message?.content || "";
+}
 function isQuestion(text) {
   const trimmed = String(text || "").trim().toLowerCase();
   if (!trimmed) return false;
@@ -413,6 +525,10 @@ async function handleConversation({
   const sceneId = context.sceneId || "";
   const roleOnScene = context.roleOnScene || "";
   const allowMedical = detectMedicalIntent(cleaned) && !(sceneId && !isQuestion(cleaned));
+  const redFlags = detectRedFlags(cleaned);
+  const pediatricMode = detectPediatric(cleaned);
+  const safetyFlags = detectSceneSafety(cleaned);
+  const vitals = extractVitals(cleaned);
 
   let sceneState = null;
   if (sceneId) {
@@ -450,14 +566,29 @@ async function handleConversation({
       { at: new Date(), by: participantName, text: cleaned },
     ].slice(-20);
 
+    const vitalsLog = [
+      ...(sceneState?.vitals || []),
+      Object.keys(vitals).length > 0
+        ? { at: new Date(), by: participantName, ...vitals }
+        : null,
+    ].filter(Boolean);
+
     sceneState = await upsertScene(sceneId, {
       participants: updatedParticipants,
       tasks,
       notes,
+      vitals: vitalsLog,
     });
+    if (safetyFlags.length > 0) {
+      await appendAudit(sceneId, {
+        type: "scene_safety",
+        by: participantName,
+        flags: safetyFlags,
+      });
+    }
   }
 
-  if (detectSilence(cleaned)) {
+  if (detectSilence(cleaned) && !context.event) {
     return {
       response: "I'm here when you're ready.",
       crisisMode: state.crisisMode,
@@ -473,6 +604,13 @@ async function handleConversation({
     if (persisted) {
       Object.assign(state, persisted);
     }
+  }
+
+  if (context.event === "dispatch") {
+    state.callCount += 1;
+  }
+  if (redFlags.length > 0) {
+    state.highAcuityCount += 1;
   }
 
   if (context.partnerName) {
@@ -509,7 +647,32 @@ async function handleConversation({
   }
 
   let responseText = "";
-  if (context.event === "shift_end") {
+  if (context.event === "dispatch") {
+    const brief = buildDispatchBrief(cleaned);
+    responseText = `Dispatch brief: ${brief.highlights.join(", ") || "No immediate red flags"}.`;
+    if (brief.suggestions.length > 0) {
+      responseText += ` Suggested: ${brief.suggestions.join(", ")}.`;
+    }
+    if (brief.equipment.length > 0) {
+      responseText += ` Prep: ${brief.equipment.join(", ")}.`;
+    }
+  } else if (context.event === "post_call" || context.event === "checkin") {
+    const busyNote =
+      state.callCount >= 4
+        ? `Busy stretch — ${state.callCount} calls so far.`
+        : "How are you holding up?";
+    const acuityNote =
+      state.highAcuityCount >= 2
+        ? `High-acuity count is ${state.highAcuityCount}.`
+        : "";
+    responseText = `Quick check-in. ${busyNote} ${acuityNote} Need anything before the next call?`.trim();
+    state.lastCheckInAt = new Date().toISOString();
+  } else if (context.event === "handoff") {
+    responseText = await buildHandoffSummary(cleaned);
+    if (sceneState?.vitals?.length === 0) {
+      responseText += "\nDocumentation check: vitals not logged.";
+    }
+  } else if (context.event === "shift_end") {
     const summary = await summarizeConversation(recentMessages);
     responseText = buildShiftEndSummary({
       name: profile?.first_name || "there",
@@ -519,6 +682,18 @@ async function handleConversation({
   } else if (detectWeatherIntent(cleaned)) {
     const city = extractCity(cleaned, cities) || profile?.station || "Huntsville";
     responseText = buildWeatherReply(city);
+  } else if (detectDestinationIntent(cleaned)) {
+    const suggestion = buildDestinationAdvisor(cleaned);
+    if (!suggestion) {
+      responseText = "I can suggest a destination if you provide the condition.";
+    } else {
+      const stationOrigin = getStationCity(profile?.station) || profile?.station || "Huntsville";
+      const destination = extractDestinationFromRecommendation(suggestion);
+      const route = destination
+        ? await buildDirectionsReply(normalizeOrigin(stationOrigin), destination)
+        : "";
+      responseText = route ? `${suggestion}\n${route}` : suggestion;
+    }
   } else if (detectDirectionsIntent(cleaned)) {
     const parsed = parseRouteFromMessage(cleaned);
     const stationOrigin = getStationCity(profile?.station) || profile?.station || "";
@@ -563,6 +738,10 @@ async function handleConversation({
     responseText = `${buildSupportLine()} ${responseText}`.trim();
   }
 
+  if (safetyFlags.length > 0) {
+    responseText = `${responseText} Scene safety not confirmed. Log police involvement?`;
+  }
+
   const fixPrompt = buildOneTapFix(guardrail);
   if (fixPrompt) {
     responseText = `${responseText}\n${fixPrompt}`;
@@ -572,6 +751,10 @@ async function handleConversation({
     const greeting = buildLoginGreeting({ profile, state, context });
     const proactive = buildProactiveNudge(state);
     responseText = `${greeting} ${proactive} ${responseText}`.trim();
+  }
+
+  if (state.highAcuityCount >= 4) {
+    responseText = `${responseText} You’ve handled ${state.highAcuityCount} high-acuity calls—consider a hydration check.`;
   }
 
   state.lastSeenAt = new Date().toISOString();
